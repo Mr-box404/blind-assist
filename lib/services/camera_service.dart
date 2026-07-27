@@ -25,6 +25,10 @@ import 'settings_service.dart';
 ///   2. 调用 startImageStream() 开始采集
 ///   3. 通过 onFrame 回调接收图像数据
 ///   4. 使用完毕调用 dispose() 释放资源
+/// 图像帧回调函数类型
+/// 参数为转换后的灰度图像数据
+typedef FrameCallback = void Function(CameraFrame frame);
+
 class CameraService {
   // ==================== 单例实现 ====================
 
@@ -46,10 +50,6 @@ class CameraService {
   bool get isInitialized => _controller?.value.isInitialized ?? false;
 
   // ==================== 图像流回调 ====================
-
-  /// 图像帧回调函数类型
-  /// 参数为转换后的灰度图像数据
-  typedef FrameCallback = void Function(CameraFrame frame);
 
   /// 当前注册的帧回调
   FrameCallback? _onFrame;

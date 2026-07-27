@@ -29,14 +29,15 @@ import 'depth_to_audio_mapper.dart';
 ///   2. 每帧调用 updateWithDepthFrame() 传入新的深度图
 ///   3. 引擎会通过回调输出音频参数
 ///   4. 调用 stop() 停止扫描
-class ScanEngine {
-  /// 音频参数回调类型
-  /// 当扫描到物体时调用，传入音频参数；无物体时传入null
-  typedef AudioParamsCallback = void Function(AudioParams? params);
+/// 音频参数回调类型
+/// 当扫描到物体时调用，传入音频参数；无物体时传入null
+typedef AudioParamsCallback = void Function(AudioParams? params);
 
-  /// 扫描位置回调类型
-  /// 每次扫描位置更新时调用，传入当前位置（0.0-1.0）
-  typedef ScanPositionCallback = void Function(double position);
+/// 扫描位置回调类型
+/// 每次扫描位置更新时调用，传入当前位置（0.0-1.0）
+typedef ScanPositionCallback = void Function(double position);
+
+class ScanEngine {
 
   // ==================== 状态 ====================
 
