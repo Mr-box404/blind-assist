@@ -9,6 +9,7 @@ package com.blindassist.blind_assist
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
@@ -138,7 +139,7 @@ class MainActivity : FlutterActivity() {
                 } else {
                     // 兼容 API 21-25 的传统构造函数
                     AudioTrack(
-                        AudioTrack.STREAM_MUSIC,
+                        AudioManager.STREAM_MUSIC,
                         sampleRate,
                         AudioFormat.CHANNEL_OUT_STEREO,
                         AudioFormat.ENCODING_PCM_16BIT,
