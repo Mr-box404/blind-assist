@@ -5,10 +5,11 @@
 #
 # 编译流程：
 #   1. 安装 Flutter SDK
-#   2. 下载依赖包
-#   3. 下载 MiDaS 深度估计模型文件
-#   4. 编译生成 APK
-#   5. 上传 APK 到 Actions artifacts（可下载）
+#   2. 生成 Android 平台文件（如果不存在）
+#   3. 下载依赖包
+#   4. 下载 MiDaS 深度估计模型文件
+#   5. 编译生成 APK
+#   6. 上传 APK 到 Actions artifacts（可下载）
 #
 # 编译时长：约 15-25 分钟（首次会更慢）
 
@@ -30,7 +31,7 @@ jobs:
   build:
     name: 编译 APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       # 步骤1：检出代码
@@ -58,46 +59,85 @@ jobs:
           flutter --version
           flutter doctor -v
 
-      # 步骤5：下载 MiDaS 深度估计模型文件
+      # 步骤5：生成 Android 平台文件（如果项目缺少 android 目录）
+      - name: 生成 Android 平台文件
+        run: |
+          if [ ! -d "android" ]; then
+            echo "android 目录不存在，正在生成..."
+            flutter create . --org com.blindassist --project-name blind_assist --platforms android
+          else
+            echo "android 目录已存在"
+          fi
+          ls -la
+
+      # 步骤6：下载 MiDaS 深度估计模型文件
       - name: 下载 MiDaS 模型文件
         run: |
           mkdir -p assets/models
-          # 尝试从 Hugging Face 下载 MiDaS small TFLite 模型
+          # 尝试多个下载源（Hugging Face + 备用源）
+          echo "尝试下载 MiDaS small TFLite 模型..."
           curl -L -o assets/models/midas_small.tflite \
             "https://huggingface.co/litert-community/MiDaS-small/resolve/main/model.tflite" \
-            || echo "模型下载失败，将使用占位文件"
+            --connect-timeout 30 --max-time 120 \
+            || echo "Hugging Face 下载失败"
+
           # 如果下载失败，创建占位文件（APP仍可编译，但深度估计功能不可用）
-          if [ ! -s assets/models/midas_small.tflite ]; then
-            echo "使用占位模型文件"
-            head -c 100 /dev/urandom > assets/models/midas_small.tflite
+          if [ ! -s assets/models/midas_small.tflite ] || [ $(stat -c%s assets/models/midas_small.tflite 2>/dev/null || echo 0) -lt 1000 ]; then
+            echo "下载失败或文件太小，使用占位模型文件"
+            dd if=/dev/urandom of=assets/models/midas_small.tflite bs=1024 count=10 2>/dev/null
           fi
+          echo "模型文件信息："
           ls -la assets/models/
 
-      # 步骤6：安装 Flutter 依赖
+      # 步骤7：安装 Flutter 依赖
       - name: 安装依赖
         run: flutter pub get
 
-      # 步骤7：配置 Android SDK
+      # 步骤8：配置 Android SDK
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v3
         with:
           sdk-platform: 34
           sdk-build-tools: 34.0.0
 
-      # 步骤8：编译 APK（debug 版本，编译速度快）
+      # 步骤9：配置 Android 不压缩 tflite 文件
+      - name: 配置 Android 不压缩 tflite
+        run: |
+          if [ -f "android/app/build.gradle" ]; then
+            # 在 android 块中添加 aaptOptions
+            sed -i '/android {/a\    aaptOptions {\n        noCompress "tflite"\n    }' android/app/build.gradle
+            echo "已配置 aaptOptions"
+          fi
+
+      # 步骤10：配置 Android 权限
+      - name: 配置 Android 权限
+        run: |
+          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
+            # 在 manifest 标签后添加权限
+            sed -i 's|<application|<uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n    <application|' android/app/src/main/AndroidManifest.xml
+            echo "已添加 Android 权限"
+            cat android/app/src/main/AndroidManifest.xml
+          fi
+
+      # 步骤11：编译 APK（debug 版本，编译速度快，容错性强）
       - name: 编译 APK
         run: flutter build apk --debug --no-tree-shake-icons
         continue-on-error: true
 
-      # 步骤9：如果 debug 编译失败，尝试更宽松的编译
+      # 步骤12：如果 debug 编译失败，显示详细错误
       - name: 重试编译（如果失败）
         if: failure()
         run: |
+          echo "首次编译失败，尝试清理后重新编译..."
           flutter clean
           flutter pub get
-          flutter build apk --debug --no-tree-shake-icons || echo "编译失败，请检查代码"
+          flutter build apk --debug --no-tree-shake-icons 2>&1 || {
+            echo "=== 编译失败 ==="
+            echo "请将以上错误信息反馈给开发者"
+            exit 1
+          }
 
-      # 步骤10：上传 APK 到 Actions artifacts
+      # 步骤13：上传 APK 到 Actions artifacts
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
@@ -106,7 +146,7 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # 步骤11：显示编译结果
+      # 步骤14：显示编译结果
       - name: 编译结果
         run: |
           echo "## 编译结果" >> $GITHUB_STEP_SUMMARY
@@ -114,7 +154,11 @@ jobs:
             echo "✅ APK 编译成功！" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "📂 在右上角的 Artifacts 区域下载 APK 文件" >> $GITHUB_STEP_SUMMARY
-            ls -lh build/app/outputs/flutter-apk/*.apk
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### APK 文件信息" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            ls -lh build/app/outputs/flutter-apk/*.apk >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ APK 编译失败，请查看上方日志" >> $GITHUB_STEP_SUMMARY
           fi
