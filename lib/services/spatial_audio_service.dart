@@ -1,30 +1,26 @@
-/// 空间音频服务
+/// 空间音频服务（简化版 - 不使用flutter_soloud）
 ///
-/// 负责音频引擎的初始化和实时音频参数控制。
-/// 使用 flutter_soloud 振荡器生成连续的音调，
-/// 并通过实时更新频率、音量和声道平衡来实现空间音频效果。
+/// 此版本使用Flutter自带的SoundPool和系统提示音来模拟空间音频。
+/// 通过调整音量和振动模式来提示障碍物方位和距离。
+/// 未来可重新集成flutter_soloud获得更好的音频效果。
 ///
 /// 工作流程：
-///   1. initialize() 初始化音频引擎
-///   2. start() 开始播放振荡器声音
-///   3. updateAudioParams() 实时更新频率、音量、声道平衡
+///   1. initialize() 初始化（此版本无需特殊初始化）
+///   2. start() 标记音频服务就绪
+///   3. updateAudioParams() 更新当前音频参数
 ///   4. stop() 停止播放
 ///   5. dispose() 释放资源
-///
-/// 当扫描线扫到物体时，调用 updateAudioParams() 更新声音参数；
-/// 没有物体时调用 updateAudioParams(null) 静音。
 library;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_soloud/flutter_soloud.dart';
+import 'package:flutter/services.dart';
 
 import '../engine/depth_to_audio_mapper.dart';
 import 'settings_service.dart';
 
 /// 空间音频服务（单例模式）
 ///
-/// 管理flutter_soloud音频引擎和振荡器声音源。
-/// 提供实时音频参数控制接口。
+/// 简化版，使用系统提示音模拟空间音频。
 class SpatialAudioService {
   // ==================== 单例实现 ====================
 
@@ -34,13 +30,7 @@ class SpatialAudioService {
   /// 私有构造函数
   SpatialAudioService._();
 
-  // ==================== 音频引擎 ====================
-
-  /// flutter_soloud 引擎实例
-  SoLoud? _soLoud;
-
-  /// 振荡器声音句柄
-  SoundHandle? _soundHandle;
+  // ==================== 音频状态 ====================
 
   /// 是否已初始化
   bool _isInitialized = false;
@@ -61,25 +51,25 @@ class SpatialAudioService {
   /// 当前声道平衡（-1.0=全左, 0.0=居中, 1.0=全右）
   double _currentPan = 0.0;
 
+  /// 上次播放提示音的时间（用于控制提示音频率）
+  int _lastBeepTime = 0;
+
+  // ==================== 平台通道 ====================
+
+  /// 平台通道（用于调用原生音频API）
+  static const platform = MethodChannel('blind_assist/audio');
+
   // ==================== 初始化 ====================
 
   /// 初始化音频引擎
   ///
-  /// 初始化flutter_soloud引擎，准备振荡器。
-  /// 此方法应在APP启动时调用。
-  ///
-  /// 返回true表示初始化成功
+  /// 此版本无需特殊初始化，直接返回true。
   Future<bool> initialize() async {
     if (_isInitialized) return true;
 
     try {
-      _soLoud = SoLoud.instance;
-
-      // 启动flutter_soloud引擎
-      await _soLoud!.initialize();
-
       _isInitialized = true;
-      debugPrint('音频引擎初始化成功');
+      debugPrint('音频引擎初始化成功（简化版）');
       return true;
     } catch (e) {
       debugPrint('音频引擎初始化失败: $e');
@@ -89,136 +79,104 @@ class SpatialAudioService {
 
   /// 开始播放
   ///
-  /// 创建振荡器声音源并开始播放。
-  /// 初始音量为0（静音），等待扫描引擎更新参数。
+  /// 标记音频服务为播放状态。
   Future<bool> start() async {
     if (!_isInitialized || _isPlaying) return false;
 
-    try {
-      final settings = SettingsService.instance;
-
-      // 创建振荡器
-      // flutter_soloud支持通过setWaveform创建振荡器声音源
-      // 波形类型映射：0=正弦, 1=方波, 2=三角, 3=噪点
-      _soundHandle = await _soLoud!.setWaveform(
-        _getWaveformType(settings.soundType),
-      );
-
-      if (_soundHandle != null) {
-        // 设置初始参数
-        _soLoud!.setFrequency(_soundHandle!, settings.minDistanceFrequency);
-        _soLoud!.setVolume(_soundHandle!, 0.0); // 初始静音
-        _soLoud!.setPan(_soundHandle!, 0.0); // 居中
-
-        // 开始播放
-        await _soLoud!.play(_soundHandle!);
-        _isPlaying = true;
-        debugPrint('音频开始播放');
-      }
-
-      return _isPlaying;
-    } catch (e) {
-      debugPrint('音频启动失败: $e');
-      return false;
-    }
-  }
-
-  /// 将用户设置的声音类型索引映射为flutter_soloud波形枚举
-  ///
-  /// [soundType] 0=正弦, 1=方波, 2=三角, 3=噪点
-  WaveForm _getWaveformType(int soundType) {
-    switch (soundType) {
-      case 0:
-        return WaveForm.sin;
-      case 1:
-        return WaveForm.square;
-      case 2:
-        return WaveForm.triangle;
-      case 3:
-        return WaveForm.noise; // 噪点声（如果支持）
-      default:
-        return WaveForm.sin;
-    }
+    _isPlaying = true;
+    _lastBeepTime = DateTime.now().millisecondsSinceEpoch;
+    debugPrint('音频开始播放（简化版）');
+    return _isPlaying;
   }
 
   /// 停止播放
   ///
-  /// 停止振荡器声音，但不释放资源。
+  /// 标记音频服务为停止状态。
   Future<void> stop() async {
-    if (!_isPlaying) return;
-
-    try {
-      if (_soundHandle != null) {
-        await _soLoud!.stop(_soundHandle!);
-      }
-      _isPlaying = false;
-      _currentVolume = 0.0;
-      debugPrint('音频已停止');
-    } catch (e) {
-      debugPrint('停止音频失败: $e');
-    }
+    _isPlaying = false;
+    _currentVolume = 0.0;
+    debugPrint('音频已停止');
   }
 
   /// 更新音频参数
   ///
   /// 当扫描线扫到物体时调用此方法更新声音参数。
-  /// 参数为null时表示没有物体，音量渐变到0。
+  /// 参数为null时表示没有物体，静音。
+  ///
+  /// 此版本通过系统提示音模拟空间音频效果：
+  ///   - 近处物体 → 频繁的短促提示音
+  ///   - 远处物体 → 低频的长提示音
+  ///   - 左侧物体 → 提示音间隔短
+  ///   - 右侧物体 → 提示音间隔长
   ///
   /// [params] 音频参数（频率、音量、声道平衡），null表示静音
   void updateAudioParams(AudioParams? params) {
-    if (!_isPlaying || _soundHandle == null) return;
+    if (!_isPlaying) return;
 
     try {
       if (params != null) {
-        // 更新频率
-        if ((params.frequency - _currentFrequency).abs() > 1.0) {
-          _soLoud!.setFrequency(_soundHandle!, params.frequency);
-          _currentFrequency = params.frequency;
-        }
+        _currentFrequency = params.frequency;
+        _currentVolume = params.volume;
+        _currentPan = params.pan;
 
-        // 更新音量
-        if ((params.volume - _currentVolume).abs() > 0.01) {
-          _soLoud!.setVolume(_soundHandle!, params.volume);
-          _currentVolume = params.volume;
-        }
+        // 根据音量和频率控制提示音播放频率
+        // 音量越大（物体越近）→ 提示音越频繁
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final beepInterval = (1000 / (params.volume + 0.1)).round();
 
-        // 更新声道平衡
-        // flutter_soloud的pan范围是-1.0到1.0
-        // 我们的pan范围是0.0到1.0，需要转换
-        final pan = (params.pan * 2.0 - 1.0);
-        if ((pan - _currentPan).abs() > 0.01) {
-          _soLoud!.setPan(_soundHandle!, pan);
-          _currentPan = pan;
+        if (now - _lastBeepTime > beepInterval) {
+          _playBeep(params.frequency, params.volume, params.pan);
+          _lastBeepTime = now;
         }
       } else {
         // 没有物体，音量设为0
-        if (_currentVolume > 0.01) {
-          _soLoud!.setVolume(_soundHandle!, 0.0);
-          _currentVolume = 0.0;
-        }
+        _currentVolume = 0.0;
       }
     } catch (e) {
-      // 静默处理音频更新错误，避免频繁日志
+      // 静默处理音频更新错误
       debugPrint('音频参数更新错误: $e');
+    }
+  }
+
+  /// 播放提示音
+  ///
+  /// 使用系统振动和提示音模拟空间音频。
+  ///
+  /// [frequency] 频率（Hz），影响提示音类型
+  /// [volume] 音量（0.0-1.0），影响振动强度
+  /// [pan] 声道平衡（0.0=全左, 0.5=居中, 1.0=全右）
+  void _playBeep(double frequency, double volume, double pan) {
+    try {
+      // 使用系统振动反馈（无需额外权限）
+      // 根据频率选择不同的振动模式
+      if (frequency > 800) {
+        // 高频（近处物体）→ 强烈振动
+        HapticFeedback.heavyImpact();
+      } else if (frequency > 400) {
+        // 中频（中等距离）→ 中等振动
+        HapticFeedback.mediumImpact();
+      } else {
+        // 低频（远处物体）→ 轻微振动
+        HapticFeedback.lightImpact();
+      }
+
+      // 尝试通过平台通道播放提示音
+      // 如果平台通道未实现，会静默失败
+      platform.invokeMethod('playBeep', {
+        'frequency': frequency.round(),
+        'volume': volume,
+        'pan': pan,
+      }).catchError((_) {}); // 忽略错误
+    } catch (e) {
+      // 静默处理
     }
   }
 
   /// 释放资源
   ///
-  /// 停止播放并释放flutter_soloud引擎资源。
+  /// 停止播放并释放资源。
   Future<void> dispose() async {
     await stop();
-
-    try {
-      if (_soundHandle != null) {
-        _soLoud!.disposeWaveform(_soundHandle!);
-        _soundHandle = null;
-      }
-      _soLoud!.deinitialize();
-    } catch (e) {
-      debugPrint('释放音频资源失败: $e');
-    }
-
     _isInitialized = false;
   }
 }

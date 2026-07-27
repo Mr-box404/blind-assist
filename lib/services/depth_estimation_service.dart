@@ -1,29 +1,26 @@
-/// 深度估计服务
+/// 深度估计服务（简化版 - 不使用TFLite）
 ///
-/// 使用TensorFlow Lite加载MiDaS深度估计模型，
-/// 将摄像头采集的灰度图像转换为深度图。
+/// 此版本使用简单的图像亮度分析来模拟深度估计。
+/// 近处物体通常更亮（反射光多），远处物体更暗。
+/// 这是临时替代方案，未来可重新集成TFLite模型。
 ///
 /// 核心流程：
-///   1. 加载TFLite模型（assets/models/midas_small.tflite）
-///   2. 将摄像头灰度图缩放到256x256
-///   3. 转为float32并归一化到0-1，复制为RGB三通道
-///   4. 运行AI推理，得到深度图
-///   5. 归一化深度值（0.0=最近, 1.0=最远）
-///
-/// MiDaS模型输出的深度值：值越大=越近
-/// 我们归一化后统一为：0.0=最近, 1.0=最远
+///   1. 将摄像头灰度图缩放到固定尺寸
+///   2. 分析图像亮度分布，估算深度
+///   3. 归一化深度值（0.0=最近, 1.0=最远）
 library;
 
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
 
 import '../config/app_config.dart';
 import '../models/depth_data.dart';
 import 'camera_service.dart';
 
 /// 深度估计服务（单例模式）
+///
+/// 使用亮度分析模拟深度估计，无需AI模型。
 class DepthEstimationService {
   // ==================== 单例实现 ====================
 
@@ -35,44 +32,21 @@ class DepthEstimationService {
 
   // ==================== 模型相关 ====================
 
-  /// TFLite解释器，用于运行AI推理
-  Interpreter? _interpreter;
-
-  /// 模型输入尺寸（MiDaS small = 256）
+  /// 分析尺寸（缩放后的图像尺寸）
   int _inputSize = AppConfig.modelInputSize;
 
-  /// 模型是否已加载
-  bool get isModelLoaded => _interpreter != null;
+  /// 模型是否已加载（此版本始终返回true）
+  bool get isModelLoaded => true;
 
   // ==================== 模型加载 ====================
 
   /// 加载深度估计模型
   ///
-  /// 从assets目录加载TFLite模型文件。
-  /// 模型文件路径：assets/models/midas_small.tflite
-  ///
-  /// 返回true表示加载成功
+  /// 此版本无需加载模型，直接返回true。
+  /// 保留此方法以保持接口兼容性。
   Future<bool> loadModel() async {
-    try {
-      // 从assets加载模型文件
-      _interpreter = await Interpreter.fromAsset(
-        'models/${AppConfig.modelFileName}',
-      );
-
-      // 获取模型输入张量的形状，确定输入尺寸
-      // MiDaS输入形状: [1, 256, 256, 3] → 取第1维作为尺寸
-      final inputShape = _interpreter!.getInputTensor(0).shape;
-      if (inputShape.length >= 2) {
-        _inputSize = inputShape[1];
-      }
-
-      debugPrint('深度估计模型加载成功，输入尺寸: $_inputSize x $_inputSize');
-      return true;
-    } catch (e) {
-      debugPrint('模型加载失败: $e');
-      debugPrint('请确保模型文件 ${AppConfig.modelFileName} 已放在 assets/models/ 目录下');
-      return false;
-    }
+    debugPrint('使用亮度分析模式（无需AI模型）');
+    return true;
   }
 
   // ==================== 深度估计 ====================
@@ -81,15 +55,10 @@ class DepthEstimationService {
   ///
   /// [cameraFrame] 摄像头采集的灰度图像
   /// 返回深度图（DepthFrame），深度值0.0=最近, 1.0=最远
-  /// 如果模型未加载或推理失败，返回null
+  /// 如果分析失败，返回null
   Future<DepthFrame?> estimateDepth(CameraFrame cameraFrame) async {
-    if (_interpreter == null) {
-      debugPrint('模型未加载，无法进行深度估计');
-      return null;
-    }
-
     try {
-      // 步骤1：将灰度图缩放到模型输入尺寸（256x256）
+      // 步骤1：将灰度图缩放到分析尺寸
       final resizedGray = _resizeGrayscale(
         cameraFrame.grayData,
         cameraFrame.width,
@@ -98,23 +67,8 @@ class DepthEstimationService {
         _inputSize,
       );
 
-      // 步骤2：将灰度数据转为float32并归一化到0-1，复制为RGB三通道
-      // 模型输入形状: [1, 256, 256, 3]
-      final inputBuffer = _prepareInput(resizedGray);
-
-      // 步骤3：准备输出缓冲区
-      // 模型输出形状: [1, 256, 256, 1]
-      final outputBuffer = Float32List(1 * _inputSize * _inputSize * 1);
-
-      // 步骤4：运行AI推理
-      // input和output需要包装成适合TFLite的格式
-      final input = inputBuffer.reshape([1, _inputSize, _inputSize, 3]);
-      final output = outputBuffer.reshape([1, _inputSize, _inputSize, 1]);
-
-      _interpreter!.run(input, output);
-
-      // 步骤5：处理输出，归一化深度值到0-1
-      final depths = _normalizeDepths(outputBuffer);
+      // 步骤2：使用亮度分析估算深度
+      final depths = _estimateDepthByBrightness(resizedGray);
 
       return DepthFrame(
         depths: depths,
@@ -128,64 +82,38 @@ class DepthEstimationService {
     }
   }
 
-  /// 准备模型输入
+  /// 通过亮度分析估算深度
   ///
-  /// 将灰度数据转为float32数组，归一化到0-1，并复制为RGB三通道。
+  /// 简单原理：亮度越高=越近，亮度越低=越远
+  /// 这只是一种粗略估算，实际效果不如AI模型准确。
   ///
-  /// [grayData] 缩放后的灰度数据（_inputSize x _inputSize）
-  /// 返回扁平化的float32数组，形状为 [1, _inputSize, _inputSize, 3]
-  Float32List _prepareInput(Uint8List grayData) {
-    final totalPixels = _inputSize * _inputSize;
-    final input = Float32List(totalPixels * 3);
-
-    for (int i = 0; i < totalPixels; i++) {
-      // 归一化到0-1
-      final value = grayData[i] / 255.0;
-      // 复制为RGB三通道（灰度图R=G=B）
-      input[i * 3] = value; // R通道
-      input[i * 3 + 1] = value; // G通道
-      input[i * 3 + 2] = value; // B通道
-    }
-
-    return input;
-  }
-
-  /// 归一化深度值
-  ///
-  /// MiDaS模型输出的深度值：值越大=越近，值越小=越远
-  /// 我们需要统一为：0.0=最近, 1.0=最远
-  /// 因此需要反转并归一化。
-  ///
-  /// [outputBuffer] 模型原始输出
-  /// 返回归一化后的深度值列表
-  List<double> _normalizeDepths(Float32List outputBuffer) {
+  /// [grayData] 灰度数据（_inputSize x _inputSize）
+  /// 返回归一化后的深度值列表（0.0=最近, 1.0=最远）
+  List<double> _estimateDepthByBrightness(Uint8List grayData) {
     final totalPixels = _inputSize * _inputSize;
     final depths = List<double>.filled(totalPixels, 0.0);
 
-    // 步骤1：找到输出中的最大值和最小值
-    double minVal = double.infinity;
-    double maxVal = double.negativeInfinity;
-
+    // 步骤1：计算亮度的最大值和最小值
+    int minVal = 255;
+    int maxVal = 0;
     for (int i = 0; i < totalPixels; i++) {
-      final v = outputBuffer[i];
+      final v = grayData[i];
       if (v < minVal) minVal = v;
       if (v > maxVal) maxVal = v;
     }
 
-    // 步骤2：归一化并反转
-    // MiDaS输出: 大值=近, 小值=远
-    // 我们要: 0.0=近, 1.0=远
-    // 所以: normalized = 1.0 - (value - min) / (max - min)
+    // 步骤2：根据亮度估算深度
+    // 亮=近（depth值小），暗=远（depth值大）
     final range = maxVal - minVal;
-    if (range < 0.0001) {
-      // 如果所有深度值相同（如纯色画面），全部设为最远
+    if (range < 10) {
+      // 如果亮度差异很小（如纯色画面），全部设为中等距离
       for (int i = 0; i < totalPixels; i++) {
-        depths[i] = 1.0;
+        depths[i] = 0.5;
       }
     } else {
       for (int i = 0; i < totalPixels; i++) {
-        // 归一化到0-1并反转
-        final normalized = 1.0 - (outputBuffer[i] - minVal) / range;
+        // 亮度越高=越近=depth值越小
+        final normalized = 1.0 - (grayData[i] - minVal) / range;
         depths[i] = normalized.clamp(0.0, 1.0);
       }
     }
@@ -258,7 +186,6 @@ class DepthEstimationService {
 
   /// 释放模型资源
   void dispose() {
-    _interpreter?.close();
-    _interpreter = null;
+    // 此版本无需释放资源
   }
 }
