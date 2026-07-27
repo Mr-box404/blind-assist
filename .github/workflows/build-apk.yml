@@ -77,8 +77,8 @@ jobs:
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v4
         with:
-          sdk-platform: 34
-          sdk-build-tools: 34.0.0
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+          accept-android-sdk-licenses: true
 
       - name: 配置 Android 不压缩 tflite
         run: |
@@ -96,20 +96,23 @@ jobs:
           fi
 
       - name: 编译 APK
-        run: flutter build apk --debug --no-tree-shake-icons
-        continue-on-error: true
-
-      - name: 重试编译（如果失败）
-        if: failure()
         run: |
-          echo "首次编译失败，尝试清理后重新编译..."
-          flutter clean
-          flutter pub get
+          echo "=== 开始编译 APK ==="
           flutter build apk --debug --no-tree-shake-icons 2>&1
           if [ $? -ne 0 ]; then
-            echo "=== 编译失败 ==="
-            exit 1
+            echo "=== 首次编译失败，尝试清理后重新编译 ==="
+            flutter clean
+            flutter pub get
+            flutter build apk --debug --no-tree-shake-icons 2>&1
+            if [ $? -ne 0 ]; then
+              echo "=== 编译失败 ==="
+              echo "=== 检查 build 目录 ==="
+              find build -name "*.apk" 2>/dev/null || echo "未找到 APK 文件"
+              exit 1
+            fi
           fi
+          echo "=== 编译完成，APK 文件 ==="
+          find build -name "*.apk" -exec ls -lh {} \;
 
       - name: 上传 APK
         uses: actions/upload-artifact@v5
