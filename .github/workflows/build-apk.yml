@@ -77,19 +77,8 @@ jobs:
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-35 platforms;android-34 build-tools;34.0.0'
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
           accept-android-sdk-licenses: true
-
-      - name: 修复Android SDK平台文件
-        run: |
-          echo "=== 检查 android-35 平台 ==="
-          ls -la /usr/local/lib/android/sdk/platforms/android-35/ 2>/dev/null || echo "android-35 不存在"
-          echo "=== 重新安装 android-35 平台 ==="
-          yes | sdkmanager --install "platforms;android-35" --force 2>/dev/null || true
-          echo "=== 检查安装结果 ==="
-          ls -la /usr/local/lib/android/sdk/platforms/android-35/android.jar 2>/dev/null || echo "android.jar 仍不存在"
-          echo "=== SDK 平台列表 ==="
-          sdkmanager --list_installed 2>/dev/null | grep -i platform || true
 
       - name: 配置 Android 不压缩 tflite
         run: |
