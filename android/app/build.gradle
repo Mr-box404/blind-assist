@@ -29,6 +29,7 @@ apply plugin: 'kotlin-android'
 apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
 
 android {
+    namespace 'com.blindassist.blind_assist'
     compileSdkVersion 35
 
     compileOptions {

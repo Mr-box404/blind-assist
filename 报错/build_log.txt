@@ -4,18 +4,6 @@ You are applying Flutter's app_plugin_loader Gradle plugin imperatively using th
 
 You are applying Flutter's main Gradle plugin imperatively using the apply script method, which is deprecated and will be removed in a future release. Migrate to applying Gradle plugins with the declarative plugins block: https://flutter.dev/to/flutter-gradle-plugin-apply
 
-Warning: The plugin flutter_plugin_android_lifecycle requires Android SDK version 35 or higher.
-For more information about build configuration, see https://flutter.dev/to/review-gradle-config.
-Your project is configured to compile against Android SDK 34, but the following plugin(s) require to be compiled against a higher Android SDK version:
-- flutter_plugin_android_lifecycle compiles against Android SDK 35
-Fix this issue by compiling against the highest Android SDK version (they are backward compatible).
-Add the following to /home/runner/work/blind-assist/blind-assist/android/app/build.gradle:
-
-    android {
-        compileSdk = 35
-        ...
-    }
-
 Checking the license for package Android SDK Build-Tools 30.0.3 in /usr/local/lib/android/sdk/licenses
 License for package Android SDK Build-Tools 30.0.3 accepted.
 Preparing "Install Android SDK Build-Tools 30.0.3 (revision: 30.0.3)".
@@ -23,118 +11,21 @@ Preparing "Install Android SDK Build-Tools 30.0.3 (revision: 30.0.3)".
 Installing Android SDK Build-Tools 30.0.3 in /usr/local/lib/android/sdk/build-tools/30.0.3
 "Install Android SDK Build-Tools 30.0.3 (revision: 30.0.3)" complete.
 "Install Android SDK Build-Tools 30.0.3 (revision: 30.0.3)" finished.
-lib/engine/scan_engine.dart:35:3: Error: Typedefs can't be declared inside classes.
-Try moving the typedef to the top-level.
-  typedef AudioParamsCallback = void Function(AudioParams? params);
-  ^^^^^^^
-lib/engine/scan_engine.dart:35:11: Error: Variables must be declared using the keywords 'const', 'final', 'var' or a type name.
-Try adding the name of the type of the variable or the keyword 'var'.
-  typedef AudioParamsCallback = void Function(AudioParams? params);
-          ^^^^^^^^^^^^^^^^^^^
-lib/engine/scan_engine.dart:35:33: Error: Expected an identifier, but got 'void'.
-Try inserting an identifier before 'void'.
-  typedef AudioParamsCallback = void Function(AudioParams? params);
-                                ^^^^
-lib/engine/scan_engine.dart:35:31: Error: Expected ';' after this.
-  typedef AudioParamsCallback = void Function(AudioParams? params);
-                              ^
-lib/engine/scan_engine.dart:39:3: Error: Typedefs can't be declared inside classes.
-Try moving the typedef to the top-level.
-  typedef ScanPositionCallback = void Function(double position);
-  ^^^^^^^
-lib/engine/scan_engine.dart:39:11: Error: Variables must be declared using the keywords 'const', 'final', 'var' or a type name.
-Try adding the name of the type of the variable or the keyword 'var'.
-  typedef ScanPositionCallback = void Function(double position);
-          ^^^^^^^^^^^^^^^^^^^^
-lib/engine/scan_engine.dart:39:34: Error: Expected an identifier, but got 'void'.
-Try inserting an identifier before 'void'.
-  typedef ScanPositionCallback = void Function(double position);
-                                 ^^^^
-lib/engine/scan_engine.dart:39:32: Error: Expected ';' after this.
-  typedef ScanPositionCallback = void Function(double position);
-                               ^
-lib/engine/scan_engine.dart:39:39: Error: 'Function' is already declared in this scope.
-  typedef ScanPositionCallback = void Function(double position);
-                                      ^^^^^^^^
-lib/engine/scan_engine.dart:35:38: Context: Previous declaration of 'Function'.
-  typedef AudioParamsCallback = void Function(AudioParams? params);
-                                     ^^^^^^^^
-lib/engine/scan_engine.dart:61:3: Error: 'AudioParamsCallback' isn't a type.
-  AudioParamsCallback? onAudioParams;
-  ^^^^^^^^^^^^^^^^^^^
-lib/engine/scan_engine.dart:35:11: Context: This isn't a type.
-  typedef AudioParamsCallback = void Function(AudioParams? params);
-          ^^^^^^^^^^^^^^^^^^^
-lib/engine/scan_engine.dart:64:3: Error: 'ScanPositionCallback' isn't a type.
-  ScanPositionCallback? onScanPosition;
-  ^^^^^^^^^^^^^^^^^^^^
-lib/engine/scan_engine.dart:39:11: Context: This isn't a type.
-  typedef ScanPositionCallback = void Function(double position);
-          ^^^^^^^^^^^^^^^^^^^^
-lib/services/camera_service.dart:52:3: Error: Typedefs can't be declared inside classes.
-Try moving the typedef to the top-level.
-  typedef FrameCallback = void Function(CameraFrame frame);
-  ^^^^^^^
-lib/services/camera_service.dart:52:11: Error: Variables must be declared using the keywords 'const', 'final', 'var' or a type name.
-Try adding the name of the type of the variable or the keyword 'var'.
-  typedef FrameCallback = void Function(CameraFrame frame);
-          ^^^^^^^^^^^^^
-lib/services/camera_service.dart:52:27: Error: Expected an identifier, but got 'void'.
-Try inserting an identifier before 'void'.
-  typedef FrameCallback = void Function(CameraFrame frame);
-                          ^^^^
-lib/services/camera_service.dart:52:25: Error: Expected ';' after this.
-  typedef FrameCallback = void Function(CameraFrame frame);
-                        ^
-lib/services/camera_service.dart:55:3: Error: 'FrameCallback' isn't a type.
-  FrameCallback? _onFrame;
-  ^^^^^^^^^^^^^
-lib/services/camera_service.dart:52:11: Context: This isn't a type.
-  typedef FrameCallback = void Function(CameraFrame frame);
-          ^^^^^^^^^^^^^
-lib/services/camera_service.dart:160:33: Error: 'FrameCallback' isn't a type.
-  Future<bool> startImageStream(FrameCallback onFrame) async {
-                                ^^^^^^^^^^^^^
-lib/services/camera_service.dart:52:11: Context: This isn't a type.
-  typedef FrameCallback = void Function(CameraFrame frame);
-          ^^^^^^^^^^^^^
-lib/engine/scan_engine.dart:32:7: Error: The non-abstract class 'ScanEngine' is missing implementations for these members:
- - ScanEngine.Function
-Try to either
- - provide an implementation,
- - inherit an implementation from a superclass or mixin,
- - mark the class as abstract, or
- - provide a 'noSuchMethod' implementation.
-
-class ScanEngine {
-      ^^^^^^^^^^
-lib/engine/scan_engine.dart:35:38: Context: 'ScanEngine.Function' is defined here.
-  typedef AudioParamsCallback = void Function(AudioParams? params);
-                                     ^^^^^^^^
-lib/services/camera_service.dart:28:7: Error: The non-abstract class 'CameraService' is missing implementations for these members:
- - CameraService.Function
-Try to either
- - provide an implementation,
- - inherit an implementation from a superclass or mixin,
- - mark the class as abstract, or
- - provide a 'noSuchMethod' implementation.
-
-class CameraService {
-      ^^^^^^^^^^^^^
-lib/services/camera_service.dart:52:32: Context: 'CameraService.Function' is defined here.
-  typedef FrameCallback = void Function(CameraFrame frame);
-                               ^^^^^^^^
-Target kernel_snapshot_program failed: Exception
-
 
 FAILURE: Build failed with an exception.
 
-* Where:
-Script '/opt/hostedtoolcache/flutter/stable-3.24.0-x64/flutter/packages/flutter_tools/gradle/src/main/groovy/flutter.groovy' line: 1687
-
 * What went wrong:
-Execution failed for task ':app:compileFlutterBuildDebug'.
-> Process 'command '/opt/hostedtoolcache/flutter/stable-3.24.0-x64/flutter/bin/flutter'' finished with non-zero exit value 1
+Execution failed for task ':app:generateDebugBuildConfig'.
+> Error while evaluating property 'namespace' of task ':app:generateDebugBuildConfig'
+   > Failed to calculate the value of task ':app:generateDebugBuildConfig' property 'namespace'.
+      > Failed to calculate the value of property 'namespace'.
+         > Package Name not found in /home/runner/work/blind-assist/blind-assist/android/app/src/main/AndroidManifest.xml, and namespace not specified. Please specify a namespace for the generated R and BuildConfig classes via android.namespace in the module's build.gradle file like so:
+
+           android {
+               namespace 'com.example.namespace'
+           }
+
+
 
 * Try:
 > Run with --stacktrace option to get the stack trace.
@@ -143,6 +34,6 @@ Execution failed for task ':app:compileFlutterBuildDebug'.
 
 * Get more help at https://help.gradle.org
 
-BUILD FAILED in 1m 38s
-Running Gradle task 'assembleDebug'...                             98.5s
+BUILD FAILED in 1m 39s
+Running Gradle task 'assembleDebug'...                            100.3s
 Gradle task assembleDebug failed with exit code 1
