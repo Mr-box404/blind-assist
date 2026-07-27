@@ -15,16 +15,12 @@ Installing Android SDK Build-Tools 30.0.3 in /usr/local/lib/android/sdk/build-to
 FAILURE: Build failed with an exception.
 
 * What went wrong:
-Execution failed for task ':app:generateDebugBuildConfig'.
-> Error while evaluating property 'namespace' of task ':app:generateDebugBuildConfig'
-   > Failed to calculate the value of task ':app:generateDebugBuildConfig' property 'namespace'.
-      > Failed to calculate the value of property 'namespace'.
-         > Package Name not found in /home/runner/work/blind-assist/blind-assist/android/app/src/main/AndroidManifest.xml, and namespace not specified. Please specify a namespace for the generated R and BuildConfig classes via android.namespace in the module's build.gradle file like so:
-
-           android {
-               namespace 'com.example.namespace'
-           }
-
+Execution failed for task ':app:processDebugResources'.
+> A failure occurred while executing com.android.build.gradle.internal.res.LinkApplicationAndroidResourcesTask$TaskAction
+   > Android resource linking failed
+     aapt2 E 07-27 07:03:52  3468  3468 LoadedArsc.cpp:94] RES_TABLE_TYPE_TYPE entry offsets overlap actual entry data.
+     aapt2 E 07-27 07:03:52  3468  3468 ApkAssets.cpp:149] Failed to load resources table in APK '/usr/local/lib/android/sdk/platforms/android-35/android.jar'.
+     error: failed to load include path /usr/local/lib/android/sdk/platforms/android-35/android.jar.
 
 
 * Try:
@@ -34,6 +30,6 @@ Execution failed for task ':app:generateDebugBuildConfig'.
 
 * Get more help at https://help.gradle.org
 
-BUILD FAILED in 1m 39s
-Running Gradle task 'assembleDebug'...                            100.3s
+BUILD FAILED in 1m 51s
+Running Gradle task 'assembleDebug'...                            112.2s
 Gradle task assembleDebug failed with exit code 1
