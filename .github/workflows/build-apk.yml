@@ -98,21 +98,36 @@ jobs:
       - name: 编译 APK
         run: |
           echo "=== 开始编译 APK ==="
-          flutter build apk --debug --no-tree-shake-icons 2>&1
-          if [ $? -ne 0 ]; then
+          flutter build apk --debug --no-tree-shake-icons 2>&1 | tee build_log.txt
+          BUILD_EXIT_CODE=${PIPESTATUS[0]}
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
             echo "=== 首次编译失败，尝试清理后重新编译 ==="
             flutter clean
             flutter pub get
-            flutter build apk --debug --no-tree-shake-icons 2>&1
-            if [ $? -ne 0 ]; then
+            flutter build apk --debug --no-tree-shake-icons 2>&1 | tee build_log2.txt
+            BUILD_EXIT_CODE=${PIPESTATUS[0]}
+            if [ $BUILD_EXIT_CODE -ne 0 ]; then
               echo "=== 编译失败 ==="
               echo "=== 检查 build 目录 ==="
               find build -name "*.apk" 2>/dev/null || echo "未找到 APK 文件"
+              echo "=== 错误日志摘要 ==="
+              grep -i "error\|Error\|ERROR\|failed\|FAILED" build_log2.txt | head -50
               exit 1
             fi
           fi
           echo "=== 编译完成，APK 文件 ==="
           find build -name "*.apk" -exec ls -lh {} \;
+
+      - name: 上传编译日志（如果失败）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build_log.txt
+            build_log2.txt
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: 上传 APK
         uses: actions/upload-artifact@v5
