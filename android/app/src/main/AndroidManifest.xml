@@ -23,8 +23,7 @@
 
     <application
         android:label="盲人辅助导航"
-        android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:name="${applicationName}">
 
         <activity
             android:name=".MainActivity"
