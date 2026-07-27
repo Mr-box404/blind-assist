@@ -1,0 +1,14 @@
+// android/settings.gradle - Flutter 项目设置文件
+// 此文件由 Flutter 生成，用于配置 Gradle 项目
+// 不要删除此文件，否则 Android 编译会失败
+
+include ':app'
+
+def localPropertiesFile = new File(rootProject.projectDir, "local.properties")
+def properties = new Properties()
+assert localPropertiesFile.exists()
+localPropertiesFile.withReader("UTF-8") { reader -> properties.load(reader) }
+
+def flutterSdkPath = properties.getProperty("flutter.sdk")
+assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+apply from: "$flutterSdkPath/packages/flutter_tools/gradle/app_plugin_loader.gradle"
