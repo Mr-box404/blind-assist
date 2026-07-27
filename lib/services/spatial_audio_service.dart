@@ -91,10 +91,16 @@ class SpatialAudioService {
 
   /// 停止播放
   ///
-  /// 标记音频服务为停止状态。
+  /// 标记音频服务为停止状态，并通知原生层停止音频播放。
   Future<void> stop() async {
     _isPlaying = false;
     _currentVolume = 0.0;
+
+    // 通知原生层停止音频
+    try {
+      await platform.invokeMethod('stopAudio');
+    } catch (_) {}
+
     debugPrint('音频已停止');
   }
 
