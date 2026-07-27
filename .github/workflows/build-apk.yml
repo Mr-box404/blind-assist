@@ -63,7 +63,14 @@ jobs:
           ls -la assets/models/
 
       - name: 安装依赖
-        run: flutter pub get
+        run: flutter pub get --verbose 2>&1 || {
+          echo "=== flutter pub get 失败 ==="
+          echo "=== 尝试查看具体错误 ==="
+          flutter pub get 2>&1 | head -100
+          echo "=== pubspec.yaml 内容 ==="
+          cat pubspec.yaml
+          exit 1
+        }
 
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v3

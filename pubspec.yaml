@@ -10,29 +10,30 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # 摄像头实时预览与图像采集（使用稳定版本）
-  camera: ^0.10.5+9
+  # 摄像头实时预览与图像采集
+  camera: ^0.10.5
 
   # TensorFlow Lite 推理引擎（离线AI深度估计）
-  tflite_flutter: ^0.10.4
+  # 注意：tflite_flutter 可能需要从 GitHub 安装
+  tflite_flutter: ^0.9.5
 
   # Android 权限管理（摄像头、麦克风、存储）
-  permission_handler: ^11.1.0
+  permission_handler: ^11.0.0
 
   # 设置持久化（保存用户的参数偏好）
-  shared_preferences: ^2.2.2
+  shared_preferences: ^2.2.0
 
   # 图像处理（像素操作、缩放、转换）
-  image: ^4.1.7
+  image: ^4.0.0
 
   # 实时低延迟音频合成（生成立体声PCM数据并输出）
-  flutter_soloud: ^2.7.0
+  flutter_soloud: ^2.0.0
 
   # 路径管理（获取应用文件目录）
-  path_provider: ^2.1.3
+  path_provider: ^2.1.0
 
   # 文件操作
-  path: ^1.9.0
+  path: ^1.8.0
 
 flutter:
   uses-material-design: true
