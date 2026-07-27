@@ -63,14 +63,16 @@ jobs:
           ls -la assets/models/
 
       - name: 安装依赖
-        run: flutter pub get --verbose 2>&1 || {
-          echo "=== flutter pub get 失败 ==="
-          echo "=== 尝试查看具体错误 ==="
-          flutter pub get 2>&1 | head -100
-          echo "=== pubspec.yaml 内容 ==="
-          cat pubspec.yaml
-          exit 1
-        }
+        run: |
+          flutter pub get --verbose 2>&1
+          if [ $? -ne 0 ]; then
+            echo "=== flutter pub get 失败 ==="
+            echo "=== 尝试查看具体错误 ==="
+            flutter pub get 2>&1 | head -100
+            echo "=== pubspec.yaml 内容 ==="
+            cat pubspec.yaml
+            exit 1
+          fi
 
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v4
@@ -103,10 +105,11 @@ jobs:
           echo "首次编译失败，尝试清理后重新编译..."
           flutter clean
           flutter pub get
-          flutter build apk --debug --no-tree-shake-icons 2>&1 || {
+          flutter build apk --debug --no-tree-shake-icons 2>&1
+          if [ $? -ne 0 ]; then
             echo "=== 编译失败 ==="
             exit 1
-          }
+          fi
 
       - name: 上传 APK
         uses: actions/upload-artifact@v5
