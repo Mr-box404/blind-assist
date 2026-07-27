@@ -64,11 +64,21 @@ jobs:
         run: |
           if [ ! -d "android" ]; then
             echo "android 目录不存在，正在生成..."
-            flutter create . --org com.blindassist --project-name blind_assist --platforms android
+            # 备份现有的 pubspec.yaml（flutter create 会覆盖它）
+            cp pubspec.yaml pubspec.yaml.bak
+            cp README.md README.md.bak 2>/dev/null || true
+            # 强制创建 android 平台文件
+            flutter create --force --platforms android --org com.blindassist --project-name blind_assist .
+            # 恢复 pubspec.yaml
+            cp pubspec.yaml.bak pubspec.yaml
+            cp README.md.bak README.md 2>/dev/null || true
+            echo "=== 生成完成，目录结构 ==="
+            ls -la
+            echo "=== android 目录 ==="
+            ls -la android/ 2>/dev/null || echo "android 目录不存在"
           else
             echo "android 目录已存在"
           fi
-          ls -la
 
       # 步骤6：下载 MiDaS 深度估计模型文件
       - name: 下载 MiDaS 模型文件
