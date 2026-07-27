@@ -146,32 +146,36 @@ class ScanEngine {
     // 通知UI更新扫描线位置
     onScanPosition?.call(_scanPosition);
 
-    // 步骤2：从深度图提取物体
+    // 步骤2：从深度图提取物体参数
     if (_currentDepthFrame == null) {
+      // 没有深度图数据时发送静音
       onAudioParams?.call(null);
       return;
     }
 
+    // _extractObjectAt 始终返回 DetectedObject，确保音频持续
     final object = _extractObjectAt(_currentDepthFrame!, _scanPosition);
 
-    // 步骤3：映射为音频参数
-    if (object != null) {
-      final params = DepthToAudioMapper.mapObjectToAudio(object);
-      onAudioParams?.call(params);
-    } else {
-      // 没有检测到物体，静音
-      onAudioParams?.call(null);
-    }
+    // 步骤3：映射为音频参数并输出
+    final params = DepthToAudioMapper.mapObjectToAudio(object);
+    onAudioParams?.call(params);
   }
 
-  /// 从深度图中提取指定扫描位置的物体
+  /// 从深度图中提取指定扫描位置的音频参数对应物
   ///
-  /// 在扫描线覆盖的列范围内，找到最近的物体。
+  /// 与旧版本不同，此方法始终返回一个 DetectedObject（永不返回 null），
+  /// 确保音频流持续播放。
+  ///
+  /// 方法：
+  ///   1. 在扫描线覆盖的列范围内扫描所有像素
+  ///   2. 计算加权平均深度（近处像素权重更高）
+  ///   3. 对于"空旷"区域返回低音量、低频率的环境音
+  ///   4. 对于有物体的区域返回对应音效
   ///
   /// [frame] 深度图
   /// [position] 扫描位置（0.0-1.0）
-  /// 返回检测到的物体，如果没有则返回null
-  DetectedObject? _extractObjectAt(DepthFrame frame, double position) {
+  /// 返回检测到的物体参数（始终非空）
+  DetectedObject _extractObjectAt(DepthFrame frame, double position) {
     final settings = SettingsService.instance;
 
     // 计算扫描线覆盖的列范围
@@ -180,77 +184,81 @@ class ScanEngine {
     final startCol = (centerColumn - scanWidth ~/ 2).clamp(0, frame.width - 1);
     final endCol = (centerColumn + scanWidth ~/ 2).clamp(0, frame.width - 1);
 
-    if (startCol >= endCol) return null;
+    if (startCol >= endCol) {
+      // 列范围无效，返回环境底音
+      return DetectedObject(
+        depth: 0.9,
+        horizontalPosition: position,
+        verticalCenter: 0.5,
+        areaRatio: 0.0,
+      );
+    }
 
-    // 在扫描线范围内，逐列逐行寻找最近物体
-    double minDepth = 1.0; // 最近物体的深度（越小越近）
-    int nearestCol = centerColumn;
-    int nearestRow = frame.height ~/ 2;
-    int objectPixelCount = 0;
-
-    // 收集所有属于最近物体的像素
-    final List<(int, int, double)> objectPixels = [];
+    // === 第一轮：扫描整列，收集深度数据 ===
+    double minDepth = 1.0;
+    double sumWeightedDepth = 0.0;
+    double totalWeight = 0.0;
 
     for (int col = startCol; col <= endCol; col++) {
       for (int row = 0; row < frame.height; row++) {
         final depth = frame.getDepth(col, row);
-
-        // 只关注足够近的物体（深度小于最大距离阈值）
-        // 深度0=近, 1=远，所以用1-depth与距离阈值比较
-        final distanceRatio = depth; // 0=近, 1=远
-
-        // 过滤掉太远的物体（超过有效距离范围）
-        if (distanceRatio > 0.95) continue; // 忽略极远的背景
-
         if (depth < minDepth) {
           minDepth = depth;
         }
+
+        // 加权：近处（深度小）权重高，远处（深度大）权重低
+        final weight = 1.0 - depth;
+        sumWeightedDepth += depth * weight;
+        totalWeight += weight;
       }
     }
 
-    // 如果整个区域都很远，不生成声音
-    if (minDepth > 0.85) return null;
+    final totalPixels = (endCol - startCol + 1) * frame.height;
 
-    // 重新扫描，收集属于最近物体的像素
-    // 物体定义为：深度值在最近深度±阈值范围内的连续像素
+    // 计算加权平均深度
+    final weightedAvgDepth = totalWeight > 0.01
+        ? (sumWeightedDepth / totalWeight)
+        : 0.9;
+
+    // 计算区域占比：将深度在阈值范围内的像素视为"物体"
     final depthThreshold = settings.depthEdgeThreshold;
+    int objectPixelCount = 0;
+    double sumDepth = 0.0;
+    double sumRow = 0.0;
 
     for (int col = startCol; col <= endCol; col++) {
       for (int row = 0; row < frame.height; row++) {
         final depth = frame.getDepth(col, row);
         if ((depth - minDepth).abs() < depthThreshold) {
-          objectPixels.add((col, row, depth));
           objectPixelCount++;
+          sumDepth += depth;
+          sumRow += row;
         }
       }
     }
 
-    // 检查物体面积是否足够大
-    final totalPixels = (endCol - startCol + 1) * frame.height;
     final areaRatio = objectPixelCount / totalPixels;
-    if (areaRatio < settings.minObjectAreaRatio) {
-      return null; // 物体太小，忽略
-    }
+    final avgDepth = objectPixelCount > 0 ? sumDepth / objectPixelCount : 0.9;
+    final verticalCenter = objectPixelCount > 0
+        ? (sumRow / objectPixelCount) / frame.height
+        : 0.5;
 
-    // 计算物体的属性
-    double sumDepth = 0;
-    double sumRow = 0;
-    double sumCol = 0;
+    // === 生成音频参数 ===
+    // 始终返回一个 DetectedObject，确保持续发声
+    // 根据区域占比决定声音是"物体音"还是"环境底音"
+    final effectiveDepth = areaRatio > settings.minObjectAreaRatio
+        ? avgDepth          // 有物体：使用物体深度
+        : weightedAvgDepth; // 空旷区域：使用加权平均深度
 
-    for (final (col, row, depth) in objectPixels) {
-      sumDepth += depth;
-      sumRow += row;
-      sumCol += col;
-    }
-
-    final avgDepth = sumDepth / objectPixelCount;
-    final verticalCenter = (sumRow / objectPixelCount) / frame.height;
-    final horizontalCenter = (sumCol / objectPixelCount) / frame.width;
+    // 空旷区域降低音量（通过将深度映射到更远的距离）
+    final outputDepth = areaRatio > settings.minObjectAreaRatio
+        ? effectiveDepth
+        : effectiveDepth * 0.3 + 0.7; // 混入 70% 的远距离，使音量更小
 
     return DetectedObject(
-      depth: avgDepth,
-      horizontalPosition: horizontalCenter,
-      verticalCenter: verticalCenter,
+      depth: outputDepth.clamp(0.0, 1.0),
+      horizontalPosition: (centerColumn / frame.width).clamp(0.0, 1.0),
+      verticalCenter: verticalCenter.clamp(0.0, 1.0),
       areaRatio: areaRatio,
     );
   }

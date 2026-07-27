@@ -1,9 +1,11 @@
 // android/app/src/main/kotlin/com/blindassist/blind_assist/MainActivity.kt
-// Flutter 应用入口 Activity + 原生音频引擎
+// Flutter 应用入口 + 连续音频流引擎
 //
-// 音频引擎使用 Android AudioTrack API 生成并播放立体声，
-// 通过 MethodChannel 接收来自 Dart 层的音频参数（频率、音量、声道平衡）。
-// 这实现了盲人辅助导航核心功能：将深度图扫描结果映射为双耳立体声。
+// 音频引擎使用 Android AudioTrack API 维持一个持续播放的音流，
+// 通过 MethodChannel 接收来自 Dart 层的实时参数更新（频率、音量、声道平衡）。
+// 扫描线每移动一步（~20ms），Dart 层就会发送新的音频参数，
+// 音频线程在下一个 PCM 数据块中立即使用新参数。
+// 这实现了类似雷达/声呐的连续扫描音效。
 
 package com.blindassist.blind_assist
 
@@ -21,48 +23,62 @@ import kotlin.math.sin
 
 /// Flutter 主 Activity
 ///
-/// 继承自 FlutterActivity，注册了名为 "blind_assist/audio" 的 MethodChannel，
-/// 用于接收来自 Dart 层的音频播放指令。
-/// 使用 Android 原生 AudioTrack API 实时生成 PCM 音频数据，
-/// 支持频率、音量和立体声平衡控制。
+/// 注册名为 "blind_assist/audio" 的 MethodChannel。
+/// 使用 Android 原生 AudioTrack API 维持一个持久化音频流，
+/// 支持在播放过程中实时更新频率、音量和立体声平衡参数。
 class MainActivity : FlutterActivity() {
     companion object {
-        /// MethodChannel 名称，需与 Dart 层保持一致
+        /// MethodChannel 名称
         private const val CHANNEL = "blind_assist/audio"
     }
 
-    /// 当前音频轨道实例
+    /// 持久化音频轨道实例
     private var audioTrack: AudioTrack? = null
 
-    /// 播放状态标志
+    /// 播放标志
     @Volatile
     private var isPlaying = false
 
-    /// 音频播放线程
+    /// 音频播放线程（持续运行，不断生成 PCM 数据）
     private var playThread: Thread? = null
+
+    // ==================== 实时音频参数（由 Flutter 端更新） ====================
+
+    /// 当前频率（Hz）
+    @Volatile
+    private var currentFrequency = 220.0
+
+    /// 当前音量（0.0-1.0）
+    @Volatile
+    private var currentVolume = 0.0
+
+    /// 当前立体声平衡（0.0=全左, 0.5=居中, 1.0=全右）
+    @Volatile
+    private var currentPan = 0.5
 
     /// 配置 Flutter 引擎
     ///
-    /// 注册 MethodChannel 处理器，处理来自 Dart 层的音频指令：
-    ///   - playBeep(frequency, volume, pan): 播放指定参数的短促提示音
-    ///   - stopAudio(): 停止当前播放
-    ///
-    /// [flutterEngine] Flutter 引擎实例
+    /// 注册 MethodChannel，处理以下指令：
+    ///   - startContinuousAudio: 启动持久化音频流
+    ///   - updateAudio(frequency, volume, pan): 实时更新音频参数
+    ///   - stopAudio: 停止音频流
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
-                "playBeep" -> {
-                    // 解析音频参数
-                    val frequency = (call.argument<Number>("frequency")?.toInt()) ?: 440
-                    val volume = (call.argument<Number>("volume")?.toDouble()
+                "startContinuousAudio" -> {
+                    startContinuousAudio()
+                    result.success(null)
+                }
+                "updateAudio" -> {
+                    // 实时更新音频参数（由 Flutter 端每 ~20ms 调用一次）
+                    currentFrequency = (call.argument<Number>("frequency")?.toDouble()
+                        ?: 220.0).coerceIn(20.0, 5000.0)
+                    currentVolume = (call.argument<Number>("volume")?.toDouble()
+                        ?: 0.0).coerceIn(0.0, 1.0)
+                    currentPan = (call.argument<Number>("pan")?.toDouble()
                         ?: 0.5).coerceIn(0.0, 1.0)
-                    val pan = (call.argument<Number>("pan")?.toDouble()
-                        ?: 0.5).coerceIn(0.0, 1.0)
-
-                    // 在后台线程播放音频
-                    playBeep(frequency, volume.toFloat(), pan.toFloat())
                     result.success(null)
                 }
                 "stopAudio" -> {
@@ -74,37 +90,21 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /// 播放提示音（支持立体声平衡）
+    /// 启动持久化音频流
     ///
-    /// 使用 AudioTrack 在后台线程生成并播放正弦波 PCM 音频。
-    /// 支持以下参数控制：
-    ///   - frequency: 频率（Hz），控制音调高低
-    ///   - volume: 音量（0.0-1.0），控制响度
-    ///   - pan: 立体声平衡（0.0=全左, 0.5=居中, 1.0=全右）
+    /// 创建一个持续运行的 AudioTrack 和后台线程。
+    /// 线程不断循环，每次读取当前音频参数生成一段 PCM 数据并写入 AudioTrack。
+    /// 参数由 Flutter 端通过 updateAudio 实时更新。
     ///
-    /// 播放时长约 180ms，带有淡入淡出包络使声音更自然。
-    ///
-    /// [frequency] 频率（Hz）
-    /// [volume] 音量（0.0-1.0）
-    /// [pan] 立体声平衡（0.0-1.0）
+    /// 与之前"每次播放一个短促提示音"不同，此模式维持一个不间断的音流，
+    /// 参数可以每 20ms 更新一次，实现连续扫描的音效。
     @Suppress("DEPRECATION")
-    private fun playBeep(frequency: Int, volume: Float, pan: Float) {
-        // 停止前一个提示音
-        stopAudio()
+    private fun startContinuousAudio() {
+        // 如果已经在播放，无需重复启动
+        if (isPlaying) return
         isPlaying = true
 
-        // 音频参数
-        val sampleRate = 22050       // 采样率 22.05kHz
-        val durationMs = 180          // 播放时长 180ms
-        val totalSamples = sampleRate * durationMs / 1000
-
-        // 计算立体声增益（等功率 panning 曲线）
-        // pan=0.0 → 左声道全开，右声道静音
-        // pan=0.5 → 左右均衡
-        // pan=1.0 → 左声道静音，右声道全开
-        val angle = pan * PI.toFloat() / 2f
-        val leftGain = cos(angle) * volume
-        val rightGain = sin(angle) * volume
+        val sampleRate = 22050
 
         playThread = Thread {
             try {
@@ -114,10 +114,9 @@ class MainActivity : FlutterActivity() {
                     AudioFormat.CHANNEL_OUT_STEREO,
                     AudioFormat.ENCODING_PCM_16BIT
                 )
-                val bufferSize = minBufferSize.coerceAtLeast(2048)
+                val bufferSize = minBufferSize.coerceAtLeast(4096)
 
-                // 创建 AudioTrack 实例
-                // API 26+ 使用 Builder，否则使用传统构造函数
+                // 创建 AudioTrack
                 audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     AudioTrack.Builder()
                         .setAudioAttributes(
@@ -137,7 +136,6 @@ class MainActivity : FlutterActivity() {
                         .setTransferMode(AudioTrack.MODE_STREAM)
                         .build()
                 } else {
-                    // 兼容 API 21-25 的传统构造函数
                     AudioTrack(
                         AudioManager.STREAM_MUSIC,
                         sampleRate,
@@ -148,97 +146,77 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
-                // 开始播放
                 audioTrack?.play()
 
-                val chunkSize = 1024
-                var samplesGenerated = 0
+                val chunkSize = 2048  // 每块约 93ms 的 PCM 数据
                 var phase = 0.0
-                val phaseIncrement = 2.0 * PI * frequency / sampleRate
 
-                // 淡入淡出包络参数
-                val attackSamples = (sampleRate * 0.02).toInt()   // 20ms 淡入
-                val releaseSamples = (sampleRate * 0.02).toInt()  // 20ms 淡出
+                // 持续生成并写入 PCM 数据
+                while (isPlaying) {
+                    // 读取当前的音频参数（这些参数由 Flutter 端实时更新）
+                    val freq = currentFrequency
+                    val vol = currentVolume
+                    val pan = currentPan
 
-                // 生成并写入 PCM 数据块
-                while (isPlaying && samplesGenerated < totalSamples) {
-                    val remaining = totalSamples - samplesGenerated
-                    val currentChunk = minOf(chunkSize, remaining)
-                    val stereoBuffer = ShortArray(currentChunk * 2)
+                    // 计算立体声增益
+                    val angle = (pan * PI / 2.0).toFloat()
+                    val leftGain = cos(angle) * vol
+                    val rightGain = sin(angle) * vol
 
-                    for (i in 0 until currentChunk) {
-                        val globalIndex = samplesGenerated + i
+                    // 如果音量为 0，写入静音数据
+                    if (vol < 0.001) {
+                        val silence = ShortArray(chunkSize * 2)
+                        audioTrack?.write(silence, 0, silence.size)
+                        phase = 0.0
+                        continue
+                    }
 
-                        // 计算包络值（淡入淡出避免咔嗒声）
-                        val envelope = when {
-                            globalIndex < attackSamples -> {
-                                globalIndex.toFloat() / attackSamples
-                            }
-                            globalIndex >= totalSamples - releaseSamples -> {
-                                (totalSamples - globalIndex).toFloat() / releaseSamples
-                            }
-                            else -> 1.0f
-                        }
+                    // 生成一个数据块的正弦波 PCM 数据
+                    val phaseIncrement = 2.0 * PI * freq / sampleRate
+                    val stereoBuffer = ShortArray(chunkSize * 2)
 
-                        // 生成正弦波采样值
-                        val rawSample = (sin(phase) * Short.MAX_VALUE * envelope).toInt()
-                        val sampleValue = rawSample.coerceIn(
-                            Short.MIN_VALUE.toInt(),
-                            Short.MAX_VALUE.toInt()
-                        ).toShort()
-
-                        // 写入左右声道（应用立体声平衡）
-                        stereoBuffer[i * 2] = (sampleValue * leftGain).toInt()
-                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            .toShort()
-                        stereoBuffer[i * 2 + 1] = (sampleValue * rightGain).toInt()
+                    for (i in 0 until chunkSize) {
+                        val sample = (sin(phase) * Short.MAX_VALUE).toInt()
                             .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                             .toShort()
 
-                        // 推进相位
+                        stereoBuffer[i * 2] = (sample * leftGain).toInt()
+                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            .toShort()
+                        stereoBuffer[i * 2 + 1] = (sample * rightGain).toInt()
+                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            .toShort()
+
                         phase += phaseIncrement
                         if (phase >= 2.0 * PI) phase -= 2.0 * PI
                     }
 
-                    // 将 PCM 数据写入 AudioTrack
+                    // 写入 AudioTrack
                     audioTrack?.write(stereoBuffer, 0, stereoBuffer.size)
-                    samplesGenerated += currentChunk
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                // 清理资源
                 cleanup()
             }
         }
         playThread?.start()
     }
 
-    /// 停止音频播放
-    ///
-    /// 设置停止标志并等待播放线程结束。
-    /// 线程结束时会自动释放 AudioTrack 资源。
+    /// 停止音频
     private fun stopAudio() {
         isPlaying = false
-        playThread?.join(100)
+        playThread?.join(300)
         cleanup()
     }
 
     /// 释放 AudioTrack 资源
-    ///
-    /// 停止播放并释放底层音频资源。
-    /// 被 stopAudio() 和播放线程的 finally 块调用。
     private fun cleanup() {
-        try {
-            audioTrack?.stop()
-        } catch (_: Exception) {}
-        try {
-            audioTrack?.release()
-        } catch (_: Exception) {}
+        try { audioTrack?.stop() } catch (_: Exception) {}
+        try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
     }
 
-    /// Activity 销毁时释放资源
     override fun onDestroy() {
         stopAudio()
         super.onDestroy()
