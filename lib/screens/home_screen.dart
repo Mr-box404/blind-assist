@@ -102,9 +102,9 @@ class _HomeScreenState extends State<HomeScreen> {
   ///   1. 音频参数 → 更新空间音频服务
   ///   2. 扫描位置 → 更新UI显示
   void _setupScanEngineCallbacks() {
-    _scanEngine.onAudioParams = (params) {
-      // 收到音频参数，更新音频服务
-      _audioService.updateAudioParams(params);
+    _scanEngine.onMultiAudio = (sources) {
+      // 收到8个声源的音频参数，更新音频服务
+      _audioService.updateMultiSourceAudio(sources);
     };
 
     _scanEngine.onScanPosition = (position) {

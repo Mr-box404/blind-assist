@@ -1,11 +1,17 @@
 // android/app/src/main/kotlin/com/blindassist/blind_assist/MainActivity.kt
-// Flutter 应用入口 + 连续音频流引擎
+// Flutter 应用入口 + 8声源立体声音频引擎
 //
-// 音频引擎使用 Android AudioTrack API 维持一个持续播放的音流，
-// 通过 MethodChannel 接收来自 Dart 层的实时参数更新（频率、音量、声道平衡）。
-// 扫描线每移动一步（~20ms），Dart 层就会发送新的音频参数，
-// 音频线程在下一个 PCM 数据块中立即使用新参数。
-// 这实现了类似雷达/声呐的连续扫描音效。
+// 核心设计：维持一个持久化的 AudioTrack，同时混合8个独立声源。
+// 每个声源有独立的频率、音量和声道平衡(pan)。
+// 8个声源对应画面的8个水平区域，从左到右排列。
+// 所有声源同时播放，混合成立体声输出。
+//
+// 这样盲人可以同时听到所有方位的声音：
+//   - 左耳听到左侧区域的物体
+//   - 右耳听到右侧区域的物体
+//   - 音调反映距离（近=高音，远=低音）
+//   - 音量反映 proximity（近=大声，远=小声）
+// 类似听立体声音乐，闭上眼睛能清晰感知各声源的位置。
 
 package com.blindassist.blind_assist
 
@@ -18,49 +24,58 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /// Flutter 主 Activity
 ///
 /// 注册名为 "blind_assist/audio" 的 MethodChannel。
-/// 使用 Android 原生 AudioTrack API 维持一个持久化音频流，
-/// 支持在播放过程中实时更新频率、音量和立体声平衡参数。
+/// 使用 Android 原生 AudioTrack API 维持一个8声源持久化音频流。
 class MainActivity : FlutterActivity() {
     companion object {
         /// MethodChannel 名称
         private const val CHANNEL = "blind_assist/audio"
+
+        /// 声源数量（对应画面的8个水平区域）
+        private const val NUM_SOURCES = 8
     }
 
     /// 持久化音频轨道实例
     private var audioTrack: AudioTrack? = null
 
-    /// 播放标志
+    /// 播放状态标志
     @Volatile
     private var isPlaying = false
 
-    /// 音频播放线程（持续运行，不断生成 PCM 数据）
+    /// 音频播放线程
     private var playThread: Thread? = null
 
-    // ==================== 实时音频参数（由 Flutter 端更新） ====================
+    /// 声源参数快照（线程安全）
+    ///
+    /// 使用快照模式：Flutter 线程更新参数时创建新快照，
+    /// 音频线程每个数据块读取一次快照，确保参数一致性。
+    private class SourceSnapshot {
+        /// 各声源频率（Hz）
+        val frequencies = DoubleArray(NUM_SOURCES) { 220.0 }
 
-    /// 当前频率（Hz）
-    @Volatile
-    private var currentFrequency = 220.0
+        /// 各声源音量（0.0-1.0）
+        val volumes = DoubleArray(NUM_SOURCES) { 0.0 }
 
-    /// 当前音量（0.0-1.0）
-    @Volatile
-    private var currentVolume = 0.0
+        /// 各声源声道平衡（0.0=全左, 0.5=居中, 1.0=全右）
+        val pans = DoubleArray(NUM_SOURCES) { 0.5 }
+    }
 
-    /// 当前立体声平衡（0.0=全左, 0.5=居中, 1.0=全右）
+    /// 当前声源参数快照（volatile 保证可见性）
     @Volatile
-    private var currentPan = 0.5
+    private var snapshot = SourceSnapshot()
 
     /// 配置 Flutter 引擎
     ///
-    /// 注册 MethodChannel，处理以下指令：
-    ///   - startContinuousAudio: 启动持久化音频流
-    ///   - updateAudio(frequency, volume, pan): 实时更新音频参数
+    /// 注册 MethodChannel 处理器：
+    ///   - startContinuousAudio: 启动8声源音频流
+    ///   - updateMultiSourceAudio(sources): 更新所有声源参数
     ///   - stopAudio: 停止音频流
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -71,14 +86,36 @@ class MainActivity : FlutterActivity() {
                     startContinuousAudio()
                     result.success(null)
                 }
-                "updateAudio" -> {
-                    // 实时更新音频参数（由 Flutter 端每 ~20ms 调用一次）
-                    currentFrequency = (call.argument<Number>("frequency")?.toDouble()
-                        ?: 220.0).coerceIn(20.0, 5000.0)
-                    currentVolume = (call.argument<Number>("volume")?.toDouble()
-                        ?: 0.0).coerceIn(0.0, 1.0)
-                    currentPan = (call.argument<Number>("pan")?.toDouble()
-                        ?: 0.5).coerceIn(0.0, 1.0)
+                "updateMultiSourceAudio" -> {
+                    // 接收来自 Flutter 的多声源参数更新
+                    val sources = call.argument<List<*>>("sources")
+                    if (sources != null) {
+                        // 创建新快照（复制当前值作为基础）
+                        val newSnap = SourceSnapshot()
+                        for (i in 0 until NUM_SOURCES) {
+                            newSnap.frequencies[i] = snapshot.frequencies[i]
+                            newSnap.volumes[i] = snapshot.volumes[i]
+                            newSnap.pans[i] = snapshot.pans[i]
+                        }
+
+                        // 用新参数更新
+                        for (i in sources.indices) {
+                            if (i < NUM_SOURCES) {
+                                val src = sources[i] as? Map<*, *>
+                                if (src != null) {
+                                    newSnap.frequencies[i] = (src["frequency"] as? Number)?.toDouble()
+                                        ?: 220.0
+                                    newSnap.volumes[i] = (src["volume"] as? Number)?.toDouble()
+                                        ?: 0.0
+                                    newSnap.pans[i] = (src["pan"] as? Number)?.toDouble()
+                                        ?: 0.5
+                                }
+                            }
+                        }
+
+                        // 原子性切换快照
+                        snapshot = newSnap
+                    }
                     result.success(null)
                 }
                 "stopAudio" -> {
@@ -90,17 +127,17 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /// 启动持久化音频流
+    /// 启动8声源持续音频流
     ///
-    /// 创建一个持续运行的 AudioTrack 和后台线程。
-    /// 线程不断循环，每次读取当前音频参数生成一段 PCM 数据并写入 AudioTrack。
-    /// 参数由 Flutter 端通过 updateAudio 实时更新。
-    ///
-    /// 与之前"每次播放一个短促提示音"不同，此模式维持一个不间断的音流，
-    /// 参数可以每 20ms 更新一次，实现连续扫描的音效。
+    /// 创建一个持久化 AudioTrack 和后台线程。
+    /// 线程不断循环，每个数据块：
+    ///   1. 读取当前声源参数快照
+    ///   2. 为每个样本混合8个声源的正弦波
+    ///   3. 应用各声源独立的声道平衡
+    ///   4. 使用限幅器防止削波
+    ///   5. 写入 AudioTrack
     @Suppress("DEPRECATION")
     private fun startContinuousAudio() {
-        // 如果已经在播放，无需重复启动
         if (isPlaying) return
         isPlaying = true
 
@@ -108,7 +145,6 @@ class MainActivity : FlutterActivity() {
 
         playThread = Thread {
             try {
-                // 获取最小缓冲区大小
                 val minBufferSize = AudioTrack.getMinBufferSize(
                     sampleRate,
                     AudioFormat.CHANNEL_OUT_STEREO,
@@ -116,7 +152,6 @@ class MainActivity : FlutterActivity() {
                 )
                 val bufferSize = minBufferSize.coerceAtLeast(4096)
 
-                // 创建 AudioTrack
                 audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     AudioTrack.Builder()
                         .setAudioAttributes(
@@ -148,50 +183,59 @@ class MainActivity : FlutterActivity() {
 
                 audioTrack?.play()
 
-                val chunkSize = 2048  // 每块约 93ms 的 PCM 数据
-                var phase = 0.0
+                val chunkSize = 1024
+                // 每个声源的相位（独立维护以确保连续性）
+                val phases = DoubleArray(NUM_SOURCES) { 0.0 }
+                // 归一化因子：除以 sqrt(N) 防止多声源叠加时削波
+                val normFactor = 1.0 / sqrt(NUM_SOURCES.toDouble())
 
-                // 持续生成并写入 PCM 数据
+                // 持续生成混合 PCM 数据
                 while (isPlaying) {
-                    // 读取当前的音频参数（这些参数由 Flutter 端实时更新）
-                    val freq = currentFrequency
-                    val vol = currentVolume
-                    val pan = currentPan
-
-                    // 计算立体声增益
-                    val angle = (pan * PI / 2.0).toFloat()
-                    val leftGain = cos(angle) * vol
-                    val rightGain = sin(angle) * vol
-
-                    // 如果音量为 0，写入静音数据
-                    if (vol < 0.001) {
-                        val silence = ShortArray(chunkSize * 2)
-                        audioTrack?.write(silence, 0, silence.size)
-                        phase = 0.0
-                        continue
-                    }
-
-                    // 生成一个数据块的正弦波 PCM 数据
-                    val phaseIncrement = 2.0 * PI * freq / sampleRate
+                    // 每个数据块读取一次快照（确保参数一致性）
+                    val snap = snapshot
                     val stereoBuffer = ShortArray(chunkSize * 2)
 
                     for (i in 0 until chunkSize) {
-                        val sample = (sin(phase) * Short.MAX_VALUE).toInt()
-                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            .toShort()
+                        var leftSum = 0.0
+                        var rightSum = 0.0
 
-                        stereoBuffer[i * 2] = (sample * leftGain).toInt()
-                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            .toShort()
-                        stereoBuffer[i * 2 + 1] = (sample * rightGain).toInt()
-                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            .toShort()
+                        // 混合所有8个声源
+                        for (s in 0 until NUM_SOURCES) {
+                            val vol = snap.volumes[s]
+                            if (vol > 0.001) {
+                                // 生成正弦波采样
+                                val sample = sin(phases[s]) * vol
 
-                        phase += phaseIncrement
-                        if (phase >= 2.0 * PI) phase -= 2.0 * PI
+                                // 等功率声道平衡
+                                val angle = snap.pans[s] * PI / 2.0
+                                leftSum += sample * cos(angle)
+                                rightSum += sample * sin(angle)
+
+                                // 推进相位
+                                phases[s] += 2.0 * PI * snap.frequencies[s] / sampleRate
+                                if (phases[s] >= 2.0 * PI) phases[s] -= 2.0 * PI
+                            }
+                        }
+
+                        // 归一化 + 限幅（防止削波）
+                        var left = leftSum * normFactor
+                        var right = rightSum * normFactor
+                        val maxAbs = maxOf(abs(left), abs(right))
+                        if (maxAbs > 0.99) {
+                            val scale = 0.99 / maxAbs
+                            left *= scale
+                            right *= scale
+                        }
+
+                        // 转换为 16-bit PCM
+                        stereoBuffer[i * 2] = (left * Short.MAX_VALUE).toInt()
+                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            .toShort()
+                        stereoBuffer[i * 2 + 1] = (right * Short.MAX_VALUE).toInt()
+                            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            .toShort()
                     }
 
-                    // 写入 AudioTrack
                     audioTrack?.write(stereoBuffer, 0, stereoBuffer.size)
                 }
             } catch (e: Exception) {
@@ -217,6 +261,7 @@ class MainActivity : FlutterActivity() {
         audioTrack = null
     }
 
+    /// Activity 销毁时释放资源
     override fun onDestroy() {
         stopAudio()
         super.onDestroy()
