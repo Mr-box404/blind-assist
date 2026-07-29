@@ -1,17 +1,17 @@
 // android/app/src/main/kotlin/com/blindassist/blind_assist/MainActivity.kt
-// Flutter 应用入口 + 8声源立体声音频引擎
+// Flutter 应用入口 + 脉冲敲击式8声源立体声音频引擎
 //
-// 核心设计：维持一个持久化的 AudioTrack，同时混合8个独立声源。
-// 每个声源有独立的频率、音量和声道平衡(pan)。
-// 8个声源对应画面的8个水平区域，从左到右排列。
-// 所有声源同时播放，混合成立体声输出。
+// 核心改进：用脉冲敲击声代替连续嗡嗡声。
 //
-// 这样盲人可以同时听到所有方位的声音：
-//   - 左耳听到左侧区域的物体
-//   - 右耳听到右侧区域的物体
-//   - 音调反映距离（近=高音，远=低音）
-//   - 音量反映 proximity（近=大声，远=小声）
-// 类似听立体声音乐，闭上眼睛能清晰感知各声源的位置。
+// 人耳定位原理：
+//   1. 瞬变起始（attack）→ 大脑通过声音起始的时间差定位
+//   2. 丰富谐波 → 多频率成分提供频谱定位线索
+//   3. 宽带噪声 → 像真实敲击声，最容易定位
+//   4. 节奏模式 → 脉冲间隔传递距离信息（近=急促, 远=缓慢）
+//
+// 每个脉冲 = 基频正弦波 + 2次/3次谐波 + 白噪声 × 快速衰减包络
+// 脉冲时长约 50ms，脉冲间隔由距离决定（0.15s~0.8s）
+// 8个声源各自独立脉冲，互不干扰，像8个方位各自敲击
 
 package com.blindassist.blind_assist
 
@@ -26,57 +26,161 @@ import io.flutter.plugin.common.MethodChannel
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.random.Random
 
 /// Flutter 主 Activity
 ///
 /// 注册名为 "blind_assist/audio" 的 MethodChannel。
-/// 使用 Android 原生 AudioTrack API 维持一个8声源持久化音频流。
+/// 使用脉冲敲击式音频引擎，8个声源各自独立发出短促敲击声。
 class MainActivity : FlutterActivity() {
     companion object {
-        /// MethodChannel 名称
         private const val CHANNEL = "blind_assist/audio"
-
-        /// 声源数量（对应画面的8个水平区域）
         private const val NUM_SOURCES = 8
+        private const val SAMPLE_RATE = 22050
     }
 
-    /// 持久化音频轨道实例
     private var audioTrack: AudioTrack? = null
 
-    /// 播放状态标志
     @Volatile
     private var isPlaying = false
 
-    /// 音频播放线程
     private var playThread: Thread? = null
 
-    /// 声源参数快照（线程安全）
-    ///
-    /// 使用快照模式：Flutter 线程更新参数时创建新快照，
-    /// 音频线程每个数据块读取一次快照，确保参数一致性。
+    /// 声源参数快照（由 Flutter 端更新）
     private class SourceSnapshot {
-        /// 各声源频率（Hz）
         val frequencies = DoubleArray(NUM_SOURCES) { 220.0 }
-
-        /// 各声源音量（0.0-1.0）
         val volumes = DoubleArray(NUM_SOURCES) { 0.0 }
-
-        /// 各声源声道平衡（0.0=全左, 0.5=居中, 1.0=全右）
         val pans = DoubleArray(NUM_SOURCES) { 0.5 }
     }
 
-    /// 当前声源参数快照（volatile 保证可见性）
     @Volatile
     private var snapshot = SourceSnapshot()
 
-    /// 配置 Flutter 引擎
+    /// 单个声源的运行时状态
     ///
-    /// 注册 MethodChannel 处理器：
-    ///   - startContinuousAudio: 启动8声源音频流
-    ///   - updateMultiSourceAudio(sources): 更新所有声源参数
-    ///   - stopAudio: 停止音频流
+    /// 管理脉冲生成：何时开始脉冲、脉冲持续时间、衰减包络。
+    private class VoiceState(seed: Long) {
+        /// 基频（Hz）
+        var frequency = 220.0
+
+        /// 音量（0.0-1.0）
+        var volume = 0.0
+
+        /// 声道平衡（0.0=全左, 0.5=居中, 1.0=全右）
+        var pan = 0.5
+
+        /// 距下次脉冲的剩余样本数
+        var samplesUntilNextPulse: Int = 0
+
+        /// 当前脉冲剩余样本数（0=不在脉冲中）
+        var pulseSamplesRemaining: Int = 0
+
+        /// 正弦波相位
+        var phase: Double = 0.0
+
+        /// 随机数生成器（用于噪声成分）
+        private val random = Random(seed)
+
+        /// 脉冲持续时间（样本数）= 50ms
+        companion object {
+            const val PULSE_DURATION = 1102  // 50ms × 22050Hz
+            const val ATTACK_SAMPLES = 88    // 4ms attack
+        }
+
+        /// 计算脉冲间隔（样本数）
+        ///
+        /// 近物体（高频）→ 短间隔（0.15s）→ 急促敲击
+        /// 远物体（低频）→ 长间隔（0.8s）→ 缓慢敲击
+        private fun pulseIntervalSamples(): Int {
+            // 频率范围 200-2000Hz → 归一化 0(远)-1(近)
+            val normalized = ((frequency - 200.0) / 1800.0).coerceIn(0.0, 1.0)
+            // 间隔 0.8s 到 0.15s
+            val intervalSec = 0.8 - normalized * 0.65
+            return (intervalSec * SAMPLE_RATE).toInt()
+        }
+
+        /// 更新参数
+        fun updateParams(freq: Double, vol: Double, p: Double) {
+            frequency = freq.coerceIn(20.0, 5000.0)
+            volume = vol.coerceIn(0.0, 1.0)
+            pan = p.coerceIn(0.0, 1.0)
+        }
+
+        /// 生成下一个采样值
+        ///
+        /// 如果不在脉冲中且等待时间已到，开始新脉冲。
+        /// 脉冲期间生成：基频 + 2次谐波 + 3次谐波 + 白噪声，乘以衰减包络。
+        ///
+        /// 返回单个采样值（-1.0 到 1.0）
+        fun nextSample(): Double {
+            if (volume < 0.001) {
+                pulseSamplesRemaining = 0
+                return 0.0
+            }
+
+            // 检查是否需要开始新脉冲
+            if (pulseSamplesRemaining <= 0) {
+                if (samplesUntilNextPulse <= 0) {
+                    // 开始新脉冲
+                    pulseSamplesRemaining = PULSE_DURATION
+                    phase = 0.0
+                } else {
+                    samplesUntilNextPulse--
+                    return 0.0
+                }
+            }
+
+            // 计算脉冲年龄（从脉冲开始算起的样本数）
+            val pulseAge = PULSE_DURATION - pulseSamplesRemaining
+
+            // 计算包络（快速 attack + 指数 decay）
+            val envelope: Double = if (pulseAge < ATTACK_SAMPLES) {
+                // Attack 阶段：线性上升
+                pulseAge.toDouble() / ATTACK_SAMPLES
+            } else {
+                // Decay 阶段：指数衰减
+                val decayProgress = (pulseAge - ATTACK_SAMPLES).toDouble() /
+                    (PULSE_DURATION - ATTACK_SAMPLES)
+                exp(-decayProgress * 6.0)
+            }
+
+            // 生成音频样本
+            // 基频（60%）+ 2次谐波（25%）+ 3次谐波（10%）+ 白噪声（5%）
+            val base = sin(phase) * 0.60
+            val h2 = sin(phase * 2.0) * 0.25
+            val h3 = sin(phase * 3.0) * 0.10
+            val noise = (random.nextDouble() * 2.0 - 1.0) * 0.05
+            val sample = base + h2 + h3 + noise
+
+            // 推进相位
+            phase += 2.0 * PI * frequency / SAMPLE_RATE
+            if (phase >= 2.0 * PI) phase -= 2.0 * PI
+
+            pulseSamplesRemaining--
+
+            // 脉冲结束时，设置下次脉冲的等待时间
+            if (pulseSamplesRemaining <= 0) {
+                samplesUntilNextPulse = pulseIntervalSamples()
+            }
+
+            return sample * envelope * volume
+        }
+
+        /// 重置状态
+        fun reset(seedOffset: Int) {
+            samplesUntilNextPulse = seedOffset * 500 + 200
+            pulseSamplesRemaining = 0
+            phase = 0.0
+        }
+    }
+
+    /// 8个声源的状态（每个有独立的随机种子避免同步）
+    private val voices = Array(NUM_SOURCES) { i -> VoiceState(seed = 42L + i * 1000L) }
+
+    /// 配置 Flutter 引擎
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -87,34 +191,36 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "updateMultiSourceAudio" -> {
-                    // 接收来自 Flutter 的多声源参数更新
                     val sources = call.argument<List<*>>("sources")
                     if (sources != null) {
-                        // 创建新快照（复制当前值作为基础）
                         val newSnap = SourceSnapshot()
+                        // 复制当前值
                         for (i in 0 until NUM_SOURCES) {
                             newSnap.frequencies[i] = snapshot.frequencies[i]
                             newSnap.volumes[i] = snapshot.volumes[i]
                             newSnap.pans[i] = snapshot.pans[i]
                         }
-
-                        // 用新参数更新
+                        // 更新新值
                         for (i in sources.indices) {
                             if (i < NUM_SOURCES) {
                                 val src = sources[i] as? Map<*, *>
                                 if (src != null) {
-                                    newSnap.frequencies[i] = (src["frequency"] as? Number)?.toDouble()
-                                        ?: 220.0
-                                    newSnap.volumes[i] = (src["volume"] as? Number)?.toDouble()
-                                        ?: 0.0
-                                    newSnap.pans[i] = (src["pan"] as? Number)?.toDouble()
-                                        ?: 0.5
+                                    newSnap.frequencies[i] = (src["frequency"] as? Number)?.toDouble() ?: 220.0
+                                    newSnap.volumes[i] = (src["volume"] as? Number)?.toDouble() ?: 0.0
+                                    newSnap.pans[i] = (src["pan"] as? Number)?.toDouble() ?: 0.5
                                 }
                             }
                         }
-
-                        // 原子性切换快照
                         snapshot = newSnap
+
+                        // 同步到声源状态
+                        for (i in 0 until NUM_SOURCES) {
+                            voices[i].updateParams(
+                                newSnap.frequencies[i],
+                                newSnap.volumes[i],
+                                newSnap.pans[i]
+                            )
+                        }
                     }
                     result.success(null)
                 }
@@ -127,26 +233,21 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /// 启动8声源持续音频流
-    ///
-    /// 创建一个持久化 AudioTrack 和后台线程。
-    /// 线程不断循环，每个数据块：
-    ///   1. 读取当前声源参数快照
-    ///   2. 为每个样本混合8个声源的正弦波
-    ///   3. 应用各声源独立的声道平衡
-    ///   4. 使用限幅器防止削波
-    ///   5. 写入 AudioTrack
+    /// 启动脉冲式音频流
     @Suppress("DEPRECATION")
     private fun startContinuousAudio() {
         if (isPlaying) return
         isPlaying = true
 
-        val sampleRate = 22050
+        // 重置所有声源（给每个声源不同的初始偏移，避免同步脉冲）
+        for (i in 0 until NUM_SOURCES) {
+            voices[i].reset(i)
+        }
 
         playThread = Thread {
             try {
                 val minBufferSize = AudioTrack.getMinBufferSize(
-                    sampleRate,
+                    SAMPLE_RATE,
                     AudioFormat.CHANNEL_OUT_STEREO,
                     AudioFormat.ENCODING_PCM_16BIT
                 )
@@ -163,7 +264,7 @@ class MainActivity : FlutterActivity() {
                         .setAudioFormat(
                             AudioFormat.Builder()
                                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .setSampleRate(sampleRate)
+                                .setSampleRate(SAMPLE_RATE)
                                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                                 .build()
                         )
@@ -173,7 +274,7 @@ class MainActivity : FlutterActivity() {
                 } else {
                     AudioTrack(
                         AudioManager.STREAM_MUSIC,
-                        sampleRate,
+                        SAMPLE_RATE,
                         AudioFormat.CHANNEL_OUT_STEREO,
                         AudioFormat.ENCODING_PCM_16BIT,
                         bufferSize,
@@ -184,40 +285,28 @@ class MainActivity : FlutterActivity() {
                 audioTrack?.play()
 
                 val chunkSize = 1024
-                // 每个声源的相位（独立维护以确保连续性）
-                val phases = DoubleArray(NUM_SOURCES) { 0.0 }
-                // 归一化因子：除以 sqrt(N) 防止多声源叠加时削波
+                // 归一化因子：防止多声源同时脉冲时削波
                 val normFactor = 1.0 / sqrt(NUM_SOURCES.toDouble())
 
-                // 持续生成混合 PCM 数据
                 while (isPlaying) {
-                    // 每个数据块读取一次快照（确保参数一致性）
-                    val snap = snapshot
                     val stereoBuffer = ShortArray(chunkSize * 2)
 
                     for (i in 0 until chunkSize) {
                         var leftSum = 0.0
                         var rightSum = 0.0
 
-                        // 混合所有8个声源
+                        // 混合8个声源
                         for (s in 0 until NUM_SOURCES) {
-                            val vol = snap.volumes[s]
-                            if (vol > 0.001) {
-                                // 生成正弦波采样
-                                val sample = sin(phases[s]) * vol
-
+                            val sample = voices[s].nextSample()
+                            if (abs(sample) > 0.0001) {
                                 // 等功率声道平衡
-                                val angle = snap.pans[s] * PI / 2.0
+                                val angle = voices[s].pan * PI / 2.0
                                 leftSum += sample * cos(angle)
                                 rightSum += sample * sin(angle)
-
-                                // 推进相位
-                                phases[s] += 2.0 * PI * snap.frequencies[s] / sampleRate
-                                if (phases[s] >= 2.0 * PI) phases[s] -= 2.0 * PI
                             }
                         }
 
-                        // 归一化 + 限幅（防止削波）
+                        // 归一化 + 限幅
                         var left = leftSum * normFactor
                         var right = rightSum * normFactor
                         val maxAbs = maxOf(abs(left), abs(right))
@@ -247,21 +336,18 @@ class MainActivity : FlutterActivity() {
         playThread?.start()
     }
 
-    /// 停止音频
     private fun stopAudio() {
         isPlaying = false
         playThread?.join(300)
         cleanup()
     }
 
-    /// 释放 AudioTrack 资源
     private fun cleanup() {
         try { audioTrack?.stop() } catch (_: Exception) {}
         try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
     }
 
-    /// Activity 销毁时释放资源
     override fun onDestroy() {
         stopAudio()
         super.onDestroy()
